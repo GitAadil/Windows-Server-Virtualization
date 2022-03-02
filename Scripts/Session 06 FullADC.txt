@@ -1,0 +1,186 @@
+# To be run in the HOST
+#Create SWITCHES
+#-------------------------------------------------------------------------------------
+#myStorageNet, myHeartbeatNet
+
+$names = @("aadilStorageNet","aadilHeartbeatNet")
+For ($i=0; $i -lt $names.Length; $i++) {
+    	$temname=$names[$i]
+	 New-VMSwitch -name $temname -SwitchType Internal
+}
+
+
+
+
+
+
+
+# To be run in the HOST
+#--------------------------------------------------------------------------------------
+# you can leave the VM to run at d drive to save disk space, memory and paging will be temporary on d drive. d drive will disappear after shutdown
+# each time needs to run scripts at host and also individual VMs to set the ip address properly 
+$VMName="aadilADC"
+
+#define an array of adapter names 
+$adapters=@("aadilstorageNIC", "InternetNIC" ,"aadilHeartbeatNIC")
+
+$mac1="00-00-03-90-01-01"
+$mac2="00-00-03-90-01-02"
+$mac3="00-00-03-90-01-03"
+$macs=@($mac1,$mac2,$mac3)
+# note the mac range needs to be valid
+# array of switch names
+$switches=@("aadilStorageNet", "LabServicesSwitch","aadilHeartbeatNet")
+
+Remove-VM -Name $VMName -Force
+New-VM -Name $VMName  -BootDevice VHD -VHDPath c:\miao\VHDs\aadilADC.vhdx  -Path c:\miao\VMs -Generation 2 
+SET-VMProcessor –VMName $VMName –count 4
+Set-VMMemory $VMName -StartupBytes 3
+Set-VMProcessor -VMName $VMName -ExposeVirtualizationExtensions $true
+Get-VMNetworkAdapter -VMName $VMName | Set-VMNetworkAdapter -MacAddressSpoofing On
+
+
+
+
+# To be run in the HOST
+#Create Domain Controller for the cluster
+#add adapters to the VM, with proper switch and mac address
+#---------------------------------------------------
+
+#remove unnecessary adapters
+remove-VMNetworkAdapter -VMName $VMName -Name "Network Adapter"
+
+#only cluster node needs hearbeat network
+For ($i=0; $i -lt 2; $i++) {
+    $adaptername=$adapters[$i]	
+	$switchname=$switches[$i]
+	$mac=$macs[$i]
+	Add-VMNetworkAdapter -VMName $VMName -Name $adaptername -SwitchName $switchname  -StaticMacAddress $mac
+}
+
+
+
+
+
+
+
+
+
+
+# To be run in the ADC
+# login to the domain controller to setup, once have vhdx, later do not need to repeat
+#-----------------------------------------------
+$VMName="aadilADC"
+# add hyperv and admin functions
+#-----------------------------------
+rename-computer $VMName
+#Install-WindowsFeature -Name Hyper-V  -IncludeManagementTools -Restart  
+
+
+# relogin again after hyper-v is installed
+#---------------------------------------
+
+$adapters=@("aadilstorageNIC", "InternetNIC" ,"aadilHeartbeatNIC")
+
+$mac1="00-00-03-90-01-01"
+$mac2="00-00-03-90-01-02"
+$mac3="00-00-03-90-01-03"
+$macs=@($mac1,$mac2,$mac3)
+
+#allow ping through firewall
+netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow
+
+
+
+
+#Config AD VM --- NIC
+#config storage network
+#--------------------------
+$mac1="00-00-03-90-01-01"
+$adaptername=$adapters[0]
+$ipadd='181.20.81.1'
+$gateway='181.20.81.1’
+
+#based on the mac address to find the adapter’s interface netif
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+$netname=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).name
+
+#remove the existing IP to add new address
+Remove-NetIpAddress -InterfaceIndex $netif -AddressFamily IPv4  -Confirm:$false
+Remove-NetRoute -InterfaceIndex $netif -AddressFamily IPv4 -Confirm:$false
+
+New-NetIPAddress -IPAddress $ipadd  -prefixlength 24  -DefaultGateway $gateway -InterfaceIndex $netif
+rename-netadapter -name $netname -newName $adaptername
+
+#hearbeat and internet DNS does not need to be configured, domain controller does not need heartbeat network. 
+
+
+
+
+#Config AD VM --- NIC
+#config Internet
+#--------------------------
+$mac1="00-00-03-90-01-02"
+$adaptername=$adapters[1]
+
+#based on the mac address to find the adapter’s interface netif
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+$netname=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).name
+
+rename-netadapter -name $netname -newName $adaptername
+
+#hearbeat and internet DNS does not need to be configured
+
+
+
+
+
+
+#Config AD VM --- Domain Crontroller
+#enable domain and dns
+#-------------------------------------
+#show current computer name    
+$ENV:computername
+
+Install-windowsfeature -name AD-Domain-Services -IncludeManagementTools  
+Get-Command -Module ADDSDeployment
+#Get-Help <cmdlet name>  
+
+# domain controller normally is also a dns server
+# this is the storageNet adapter mac address, find the interface netif
+$mac1="00-00-03-90-01-01“
+$ipadd='172.20.10.1'
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+set-DnsClientServerAddress -InterfaceIndex $netif -ServerAddresses ($ipadd)
+
+#save the following scripts into a script file e.g. adc.ps1 and run the script (too many lines)
+Install-ADDSForest `
+-DomainName "Aadil.NIT3222" `
+-CreateDnsDelegation:$false ` 
+-DatabasePath "C:\Windows\NTDS" ` 
+-DomainMode "7" ` 
+-DomainNetbiosName "AadilNIT3222" ` 
+-ForestMode "7" ` 
+-InstallDns:$true ` 
+-LogPath "C:\Windows\NTDS" ` 
+-NoRebootOnCompletion:$True ` 
+-SysvolPath "C:\Windows\SYSVOL" ` 
+-Force:$true
+
+
+
+
+
+
+#login back , now it is domain login, check servics
+Get-Service adws,kdc,netlogon,dns
+
+Get-ADDomainController
+Get-ADDomain aadil.NIT3222
+
+You did it not re	uired
+
+$VMName="aadilADC"
+$gateway='181.20.81.1’
+
+

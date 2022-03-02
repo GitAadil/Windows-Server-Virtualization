@@ -1,0 +1,156 @@
+                  #RUN IN HOST
+#create miaoVH-1  VM
+#-------------------------------
+# leave the VM to run at d drive to save disk space, memory and paging will be temporary on d drive. d drive will disappear after shutdown
+# each time needs to run scripts at host and also individual VMs to set the ip address properly ; 
+
+$VMName="aadilVH-1"
+
+$adapters=@("aadilstorageNIC", "InternetNIC" ,"aadilHeartbeatNIC")
+
+$mac1="00-00-03-90-02-01"
+$mac2="00-00-03-90-02-02"
+$mac3="00-00-03-90-02-03"
+$macs=@($mac1,$mac2,$mac3)
+
+$switches=@("aadilStorageNet", "LabServicesSwitch","aadilHeartbeatNet")
+
+
+
+
+
+
+
+
+
+# note the mac range needs to be valid
+Remove-VM -Name $VMName -Force
+New-VM -Name $VMName  -BootDevice VHD -VHDPath c:\miao\VHDs\aadilVH-1.vhdx  -Path c:\miao\VMs -Generation 2 
+SET-VMProcessor –VMName $VMName –count 4
+Set-VMMemory $VMName -StartupBytes 3GB
+Set-VMProcessor -VMName $VMName -ExposeVirtualizationExtensions $true
+Get-VMNetworkAdapter -VMName $VMName | Set-VMNetworkAdapter -MacAddressSpoofing On
+
+remove-VMNetworkAdapter -VMName $VMName -Name "Network Adapter"
+#only cluster node needs heartbeat network
+For ($i=0; $i -lt 3; $i++) {
+    $adaptername=$adapters[$i]	
+	$switchname=$switches[$i]
+	$mac=$macs[$i]
+	Add-VMNetworkAdapter -VMName $VMName -Name $adaptername -SwitchName $switchname  -StaticMacAddress $mac
+}
+
+
+
+
+
+
+
+
+
+
+
+#RUN IN MiaoVH-1
+# login to the domain controller to setup, once have vhdx, later do not need to repeat
+#-----------------------------------------------
+$VMName="aadilVH-1"
+
+# add hyperv and admin functions
+#-----------------------------------
+rename-computer $VMName
+#Install-WindowsFeature -Name Hyper-V  -IncludeManagementTools -Restart  
+
+#reboot and login again
+#allow ping through firewall
+netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow
+
+$adapters=@("aadilstorageNIC", "InternetNIC" ,"aadilHeartbeatNIC")
+
+$mac1="00-00-03-90-02-01"
+$mac2="00-00-03-90-02-02"
+$mac3="00-00-03-90-02-03"
+$macs=@($mac1,$mac2,$mac3)
+
+
+
+
+#config storage network
+#--------------------------
+$i=0
+$mac1=$macs[$i]
+$adaptername=$adapters[$i]
+$ipadd='181.20.81.101'
+$gateway='181.20.81.1'
+
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+$netname=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).name
+
+Remove-NetIpAddress -InterfaceIndex $netif -AddressFamily IPv4  -Confirm:$false
+Remove-NetRoute -InterfaceIndex $netif -AddressFamily IPv4 -Confirm:$false
+
+New-NetIPAddress -IPAddress $ipadd  -prefixlength 24  -DefaultGateway $gateway -InterfaceIndex $netif
+rename-netadapter -name $netname -newName $adaptername
+
+#add dns
+#set the dns server
+set-DnsClientServerAddress -InterfaceIndex $netif -ServerAddresses ($gateway)
+
+
+
+#aadilheartbeat network 
+#--------------------------
+$i=2
+$mac1=$macs[$i]
+$adaptername=$adapters[$i]
+$ipadd='172.20.20.101'
+$gateway='172.20.20.102'
+
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+$netname=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).name
+
+Remove-NetIpAddress -InterfaceIndex $netif -AddressFamily IPv4  -Confirm:$false
+Remove-NetRoute -InterfaceIndex $netif -AddressFamily IPv4 -Confirm:$false
+
+New-NetIPAddress -IPAddress $ipadd  -prefixlength 24  -DefaultGateway $gateway -InterfaceIndex $netif
+rename-netadapter -name $netname -newName $adaptername
+
+
+
+#config internet  network
+#--------------------------
+$i=1
+$mac1=$macs[$i]
+$adaptername=$adapters[$i]
+
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+$netname=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).name
+
+rename-netadapter -name $netname -newName $adaptername
+
+#join domain domain and dns
+#-------------------------------------
+#add mStorage1 to the domain, if the image is with domain, then this step can be skipped
+# use administrator password: yuanStudy1
+add-computer –domainname aadil.NIT3222 -Credential aadil\administrator -restart –force
+
+
+
+
+
+
+#install file server role and iscsi target server 
+Install-WindowsFeature -Name FS-iSCSITarget-Server -IncludeAllSubFeature -IncludeManagementTools
+
+# login to the scsi server, online the disks; initialise and format, assign disk letter 
+
+
+
+# install fallover cluster role with miaoVH-1, miaoVH-2
+Install-WindowsFeature -Name Failover-Clustering ÐIncludeManagementTools 
+Install-WindowsFeature -name Multipath-IO
+
+
+
+
+
+

@@ -1,0 +1,12 @@
+# use management tools, cluster administrator GUI to create cluster
+#cluster needs an ip address, give 192.168.111.10  , add both the miaoVH1 and miaoVH2
+
+#also possible to use powershell to create the cluster
+
+# install fallover cluster role with miaoVH-1, miaoVH-2
+Install-WindowsFeature -Name Failover-Clustering -IncludeManagementTools 
+Install-WindowsFeature -name Multipath-IO
+# after installation, it requires a reboot
+
+# creating cluster needs to be done either with miaoVH-1 or miaoVH-2, not both
+New-Cluster -Name aadilCluster3222 -Node aadilVH-1, aadilVH-2 -StaticAddress 172.20.10.10  -IgnoreNetwork 172.20.20.0/24

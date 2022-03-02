@@ -1,0 +1,165 @@
+#HOST
+#create storage  VM
+#-------------------------------
+# leave the VM to run at d drive to save disk space, memory and paging will be temporary on d drive. d drive will disappear after shutdown
+# each time needs to run scripts at host and also individual VMs to set the ip address properly 
+$VMName="aadilStorage"
+
+$adapters=@("aadilstorageNIC", "InternetNIC" ,"aadilHeartbeatNIC")
+
+$mac1="00-00-03-90-04-01"
+$mac2="00-00-03-90-04-02"
+$mac3="00-00-03-90-04-03"
+$macs=@($mac1,$mac2,$mac3)
+
+$switches=@("aadilStorageNet", "LabServicesSwitch","aadilHeartbeatNet")
+
+# note the mac range needs to be valid
+Remove-VM -Name $VMName -Force
+New-VM -Name $VMName  -BootDevice VHD -VHDPath c:\miao\VHDs\aadilStorage.vhdx  -Path c:\miao\VMs -Generation 2 
+SET-VMProcessor –VMName $VMName –count 3
+Set-VMMemory $VMName -DynamicMemoryEnabled $true -MinimumBytes 2GB -StartupBytes 2GB -MaximumBytes 3GB -Priority 80 -Buffer 25
+Set-VMProcessor -VMName $VMName -ExposeVirtualizationExtensions $true
+Get-VMNetworkAdapter -VMName $VMName | Set-VMNetworkAdapter -MacAddressSpoofing On
+
+
+
+
+
+remove-VMNetworkAdapter -VMName $VMName -Name "Network Adapter"
+#only cluster node needs hearbeat network
+For ($i=0; $i -lt 2; $i++) {
+    $adaptername=$adapters[$i]	
+	$switchname=$switches[$i]
+	$mac=$macs[$i]
+	Add-VMNetworkAdapter -VMName $VMName -Name $adaptername -SwitchName $switchname  -StaticMacAddress $mac
+}
+
+
+
+
+
+
+# create two virtual disk to be used as the iscsi disks
+New-VHD -Path c:\miao\VHDs\mStorageDsk1.vhdx -SizeBytes 200GB
+New-VHD -Path c:\miao\VHDs\mStorageDsk2.vhdx -SizeBytes 500GB
+
+#attach the disks to the vm mStorage_1
+Add-VMHardDiskDrive -VMName $VMName -Path c:\miao\VHDs\mStorageDsk1.vhdx  -ControllerType SCSI -ControllerNumber 0
+Add-VMHardDiskDrive -VMName $VMName -Path c:\miao\VHDs\mStorageDsk2.vhdx  -ControllerType SCSI -ControllerNumber 0
+
+
+
+
+#inside of miaoStorage
+# login to the domain controller to setup, once have vhdx, later do not need to repeat
+#-----------------------------------------------
+$VMName="aadilStorage"
+
+
+# add hyperv and admin functions
+#-----------------------------------
+rename-computer $VMName
+#Install-WindowsFeature -Name Hyper-V  -IncludeManagementTools -Restart  
+
+
+#login again to run the next part
+#-------------------------------------------
+
+#allow ping through firewall
+netsh advfirewall firewall add rule name="ICMP Allow incoming V4 echo request" protocol=icmpv4:8,any dir=in action=allow
+
+
+$adapters=@("aadilStorageNIC", "InternetNIC" ,"aadilHeartbeatNIC")
+
+$mac1="00-00-03-90-04-01"
+$mac2="00-00-03-90-04-02"
+$mac3="00-00-03-90-04-03"
+$macs=@($mac1,$mac2,$mac3)
+
+
+
+
+#config storage network
+#--------------------------
+$i=0
+$mac1=$macs[$i]
+$adaptername=$adapters[$i]
+$ipadd='181.20.81.3'
+$gateway='181.20.81.1'
+
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+$netname=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).name
+
+Remove-NetIpAddress -InterfaceIndex $netif -AddressFamily IPv4  -Confirm:$false
+Remove-NetRoute -InterfaceIndex $netif -AddressFamily IPv4 -Confirm:$false
+
+New-NetIPAddress -IPAddress $ipadd  -prefixlength 24  -DefaultGateway $gateway -InterfaceIndex $netif
+rename-netadapter -name $netname -newName $adaptername
+
+#add dns
+#set the dns server
+set-DnsClientServerAddress -InterfaceIndex $netif -ServerAddresses ($gateway)
+
+
+
+
+
+
+#config internet  network
+#--------------------------
+$i=1
+$mac1=$macs[$i]
+$adaptername=$adapters[$i]
+
+$netif=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).InterfaceIndex
+$netname=(Get-NetAdapter | where {$_.MacAddress -eq $mac1}).name
+
+rename-netadapter -name $netname -newName $adaptername
+
+
+#add into ADC
+add-computer –domainname aadil.NIT3222 -Credential aadil\administrator -restart –force
+
+
+
+
+
+#install file server role and iscsi target server 
+Install-WindowsFeature -Name FS-iSCSITarget-Server -IncludeAllSubFeature -IncludeManagementTools
+
+# login to the scsi server, online the disks; initialise and format, assign disk letter 
+
+
+
+
+#Optional
+#------------------------------------------------------------------------------
+#setup iscsi target with the disk, check the architecture: we are creating vhdx in vhdx 
+#a lot faster than the GUI approach
+New-IscsiServerTarget -TargetName "iSCSI-E" -InitiatorId @("IPAddress:192.168.111.101","IPAddress:192.168.111.102")
+New-IscsiVirtualDisk -Path "d:\iSCSI-E.vhdx" -Size 50GB
+#Assign the VHDX to the iSCSI Target
+Add-IscsiVirtualDiskTargetMapping -TargetName iSCSI-E –Path "d:\iSCSI-E.vhdx"
+
+
+
+#setup iscsi target with the disk, check the architecture: we are creating vhdx in vhdx 
+New-IscsiServerTarget -TargetName "iSCSI-D" -InitiatorId @("IPAddress:192.168.111.101","IPAddress:192.168.111.102")
+#New-IscsiVirtualDisk -Path "d:\iSCSI-D.vhdx" -Size 30GB
+#Assign the VHDX to the iSCSI Target
+Add-IscsiVirtualDiskTargetMapping -TargetName iSCSI-D –Path "d:\iSCSI-D.vhdx"
+
+
+#setup iscsi target with the disk, check the architecture: we are creating vhdx in vhdx 
+New-IscsiServerTarget -TargetName "iSCSI-E" -InitiatorId @("IPAddress:192.168.111.101","IPAddress:192.168.111.102")
+New-IscsiVirtualDisk -Path "d:\iSCSI-E.vhdx" -Size 50GB
+#Assign the VHDX to the iSCSI Target
+Add-IscsiVirtualDiskTargetMapping -TargetName iSCSI-E –Path "d:\iSCSI-E.vhdx"
+
+
+#setup iscsi target with the disk, check the architecture: we are creating vhdx in vhdx 
+New-IscsiServerTarget -TargetName "iSCSI-F1" -InitiatorId @("IPAddress:192.168.111.101","IPAddress:192.168.111.102")
+New-IscsiVirtualDisk -Path "d:\iSCSI-F.vhdx" -Size 5GB
+#Assign the VHDX to the iSCSI Target
+Add-IscsiVirtualDiskTargetMapping -TargetName iSCSI-F –Path "d:\iSCSI-F.vhdx"
